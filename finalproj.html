@@ -1,0 +1,428 @@
+<!doctype html>
+<html>
+
+<head>
+<title>CS114 Final Project</title>
+<meta charset="utf-8">
+<link href="css/finalproj.css" rel="stylesheet">
+<link href="css/spectrum.css" rel="stylesheet">
+
+<!-- Useful 3rd party libraries -->
+<script type="text/javascript" src="js/jquery-1.12.2.min.js"></script>
+<script type="text/javascript" src="js/spectrum.js"></script>
+<script type="text/javascript" src="js/glMatrix-0.9.5.js"></script>
+<script type="text/javascript" src="js/webgl-obj-loader.js"></script>
+
+<!-- Shader initialization utils -->
+<script type="text/javascript" src="js/shader-utils.js"></script>
+
+<!-- WebGL debugging utils -->
+<script type="text/javascript" src="js/webgl-debug.js"></script>
+<script type="text/javascript" src="js/debug-utils.js"></script>
+
+<!-- Model data -->
+<script type="text/javascript" src="meshes/bunny_obj.js"></script>
+<script type="text/javascript" src="meshes/monkey_obj.js"></script>
+<script type="text/javascript" src="meshes/hand_obj.js"></script>
+
+<!-- WebGL functions -->
+<script type="text/javascript" src="finalproj_webgl.js"></script>
+
+<!-- Other javascript functions -->
+<script type="text/javascript" src="finalproj.js"></script>
+
+
+<!-- Simple vertex shader for drawing the light source as a point -->
+<script id="shader-vs-light" type="x-shader/x-vertex">
+    uniform mat4 uPMatrix;
+    attribute vec3 aVertexPosition;
+
+    void main(void) {
+        gl_PointSize = 10.0;
+        gl_Position = uPMatrix * vec4(aVertexPosition, 1.0);
+    }
+</script>
+
+<!-- Common vertex shader for all shading models -->
+<script id="shader-vs" type="x-shader/x-vertex">
+    uniform mat4 uMVMatrix;             // Model-view matrix
+    uniform mat4 uPMatrix;              // Projection matrix
+    uniform mat4 uNMatrix;              // Normal matrix
+
+    attribute vec3 aVertexPosition;     // Vertex position in object space
+    attribute vec3 aVertexNormal;       // Vertex normal in object space
+
+    varying vec3 vPosition;             // Vertex position (camera space)
+    varying vec3 vNormal;               // Vertex normal (camera space)
+    varying vec3 vObjPosition;
+
+    void main(void) {
+        vec4 camSpacePosition = uMVMatrix * vec4(aVertexPosition, 1.0);
+        vPosition = vec3(camSpacePosition);
+
+        gl_Position = uPMatrix * camSpacePosition;
+
+        vec4 camSpaceNormal = uNMatrix * vec4(aVertexNormal, 0.0);
+        vNormal = vec3(camSpaceNormal);
+        vObjPosition = aVertexPosition;
+    }
+</script>
+
+<!-- Fragment shader: light draing -->
+<script id="shader-fs-light" type="x-shader/x-fragment">
+    precision mediump float;
+
+    void main(void) {
+        gl_FragColor = vec4(1.0, 1.0, 1.0, 0.5);
+    }
+</script>
+
+<!-- Fragment shader: Blinn-Phong shading -->
+<script id="shader-fs3-2" type="x-shader/x-fragment">
+    precision mediump float;
+
+    uniform vec3 uLightPos;             // Light position in camera space
+    uniform vec3 uLightColor;           // Light color
+    uniform float uLightPower;          // Light power
+    uniform vec3 uBackLightPos;         // Backlight position
+    uniform vec3 uBackLightColor;       // Backlight color
+    uniform float uBackLightProp;       // Backlight proportion
+    uniform vec3 uDiffuseColor;         // Diffuse color
+    uniform vec3 uInteriorColor;        // Material inside color
+    uniform float uExponent;            // Blinn-Phong exponent
+    uniform float uAmbient;             // Ambient
+    uniform float uDistortion;          // Distortion
+    uniform float uPower;               // Power
+    uniform float uScale;               // Scale
+    uniform float uBumpOn;
+
+    varying vec3 vPosition;             // Fragment position (camera space)
+    varying vec3 vNormal;               // Fragment normal (camera space)
+    varying vec3 vObjPosition;
+
+    float rand(vec3 co)
+    {
+        return fract(sin(dot(co.xyz, vec3(12.9898, 78.233, 23.23234))) * 43758.5453) - 0.5;
+    }
+
+    void shade(vec3 lightPosition, vec3 lightColor, float lightPower)
+    {
+        vec3 N, L, V, H1, H2, tint;
+        float I, Iback, bump;
+
+        if (uBumpOn == 1.0)
+            bump = (1.0 - dot(N, V)) * (rand(vObjPosition) / 10.0);
+        else
+            bump = 0.0;
+
+        N = normalize(vNormal + bump);
+        L = normalize(lightPosition - vPosition);
+        V = -normalize(vPosition);
+        H1 = normalize(L + V + bump);
+        H2 = normalize(L + (N * uDistortion) + (bump / 2.0));
+        I = lightPower / (pow(length(lightPosition - vPosition), 2.0) / 5.0 + 5.0);
+        Iback = lightPower * pow(clamp(dot(V, -H2), 0.0, 1.0), uPower) * uScale / 5.0;
+
+        if (dot(N, L) > 0.0)
+        {
+            tint = (dot(N, L) * uDiffuseColor) + ((1.0 - dot(N, L)) * uInteriorColor);
+            gl_FragColor += vec4(tint * (I * dot(N, L) * lightColor + uAmbient), 1.0);
+            gl_FragColor += I * pow(dot(N, H1), uExponent) * vec4(lightColor, 0.0);
+        }
+        else
+        {
+            gl_FragColor += vec4(uInteriorColor * uAmbient, 1.0);
+        }
+
+        gl_FragColor += vec4(uInteriorColor * lightColor * Iback, 1.0);
+    }
+
+    void main(void)
+    {
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
+        shade(uLightPos, uLightColor, uLightPower);
+        shade(uBackLightPos, uBackLightColor, uLightPower * uBackLightProp);
+    }
+</script>
+
+<!-- Fragment shader: microfacet shading -->
+<script id="shader-fs4" type="x-shader/x-fragment">
+    precision mediump float;
+
+    uniform vec3 uLightPos;             // Light position in camera space
+    uniform vec3 uLightColor;           // Light color
+    uniform float uLightPower;          // Light power
+    uniform vec3 uDiffuseColor;         // Diffuse color
+    uniform vec3 uInteriorColor;        // Material inside color
+    uniform vec3 uBackLightPos;         // Backlight position
+    uniform vec3 uBackLightColor;       // Backlight color
+    uniform float uBackLightProp;       // Backlight proportion
+    uniform float uBeta;                // Roughness
+    uniform float uIOR;                 // Index of refraction
+    uniform float uAmbient;             // Ambient
+    uniform float uDistortion;          // Distortion
+    uniform float uPower;               // Power
+    uniform float uScale;               // Scale
+    uniform float uBumpOn;
+
+    varying vec3 vPosition;             // Fragment position (camera space)
+    varying vec3 vNormal;               // Fragment normal (camera space)
+    varying vec3 vObjPosition;
+
+    float F(vec3 L, vec3 H)
+    {
+        float C = dot(L, H);
+        float G = sqrt(uIOR * uIOR - 1.0 + C * C);
+        return 0.5 * (pow(G - C, 2.0) / pow(G + C, 2.0)) * (1.0 + pow((C * (G + C) - 1.0) / (C * (G - C) + 1.0), 2.0));
+    }
+
+    float D(vec3 N, vec3 H)
+    {
+        float cos4 = pow(dot(N, H), 4.0);
+        float tan2 = 1.0 / pow(dot(N, H), 2.0) - 1.0;
+        return (uBeta * uBeta) / (3.14159 * cos4 * pow(uBeta * uBeta + tan2, 2.0));
+    }
+
+    float G1(vec3 V, vec3 H)
+    {
+        float tan2 = 1.0 / pow(dot(V, H), 2.0) - 1.0;
+        return 2.0 / (1.0 + sqrt(1.0 + (uBeta * uBeta) * tan2));
+    }
+
+    float G(vec3 L, vec3 V, vec3 H)
+    {
+        return G1(L, H) * G1(V, H);
+    }
+
+    float rand(vec3 co)
+    {
+        return fract(sin(dot(co.xyz, vec3(12.9898, 78.233, 23.23234))) * 43758.5453) - 0.5;
+    }
+
+    void shade(vec3 lightPosition, vec3 lightColor, float lightPower)
+    {
+        vec3 N, L, V, H, H2, tint;
+        float I, Iback, bump;
+
+        if (uBumpOn == 1.0)
+            bump = (1.0 - dot(N, V)) * (rand(vObjPosition) / 10.0);
+        else
+            bump = 0.0;
+
+        N = normalize(vNormal + bump);
+        L = normalize(lightPosition - vPosition);
+        V = -normalize(vPosition);
+        H = normalize(L + V + bump);
+        H2 = normalize(L + (N * uDistortion) + (bump / 2.0));
+        I = lightPower / (pow(length(lightPosition - vPosition), 2.0) / 5.0 + 5.0);
+        Iback = lightPower * pow(clamp(dot(V, -H2), 0.0, 1.0), uPower) * uScale / 5.0;
+
+        if (dot(N, L) > 0.0)
+        {
+            tint = (dot(N, L) * uDiffuseColor) + ((1.0 - dot(N, L)) * uInteriorColor);
+            gl_FragColor += vec4(I * dot(N, L) * (lightColor * tint + lightColor * (F(L, H) * D(N, H) * G(L, V, H)) / (4.0 * dot(N, L) * dot(N, V) )) + tint * uAmbient, 1.0);
+        }
+        else
+            gl_FragColor += vec4(uInteriorColor * uAmbient, 1.0);
+
+        gl_FragColor += vec4(uInteriorColor * lightColor * Iback, 1.0);
+    }
+
+    void main(void)
+    {
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
+        shade(uLightPos, uLightColor, uLightPower);
+        shade(uBackLightPos, uBackLightColor, uLightPower * uBackLightProp);
+    }
+</script>
+</head>
+
+
+<!-- HTML contents -->
+<body bgcolor = "#202020" text = "#999999">
+    <h1>CS114 Final: Real-Time Subsurface Scattering</h1>
+
+    <div class="droplist">
+        <span>
+            Object:
+            <select onchange="changeActiveMesh(this);">
+              <option value="0" selected="selected">Stanford bunny</option>
+              <option value="1">Suzanne monkey</option>
+              <option value="2">Human hand</option>
+            </select>
+        </span>
+        <span style="margin-left:30px">
+            Resolution:
+            <select onchange="changeResolution(this);">
+              <option value="0">640x360</option>
+              <option value="1" selected="selected">800x450</option>
+              <option value="2">960x540</option>
+            </select>
+        </span>
+
+        <table>
+            <tr>
+                <td width="200px"><input type="checkbox" onchange="changeAnimatedState(this.checked);">Animated object</td>
+                <td>
+                    <input id="sliderBar" type="range" min="1" max="36" value="6" onchange="updateSlider(this.value);" disabled>
+                    (<span id="sliderAmount">60</span>&deg;/s)
+                </td>
+            </tr>
+        </table>
+    </div>
+
+
+    <div style="margin-top:10px">
+        <canvas id="canvas0" style="border:none;" width="800" height="450"></canvas>
+    </div>
+
+    <div class="panel" style = "background-color: #333333">
+        <p>Light Source Parameters</p>
+        <table>
+            <tr>
+                <td>Light Color</td>
+                <td>
+                    <input type="text" id="lightColorPicker"> (<span id="lightColorText">#ffffff</span>)
+                </td>
+            </tr>
+            <tr>
+                <td>Backlight Color</td>
+                <td>
+                    <input type="text" id="backLightColorPicker"> (<span id="backLightColorText">#e69138</span>)
+                </td>
+            </tr>
+            <tr>
+                <td>Light Power</td>
+                <td>
+                    <input id="sliderBar_LightPower" type="range" min="1" max="20" value="10" onchange="updateSlider_LightPower(this.value);">
+                    (<span id="sliderAmount_LightPower">5</span>)
+                </td>
+            </tr>
+            <tr>
+                <td>Backlight Angle</td>
+                <td>
+                    <input id="sliderBar_BackLightAngle" type="range" min="0" max="90" value="45" onchange="updateSlider_BackLightAngle(this.value);">
+                    (<span id="sliderAmount_BackLightAngle">0°</span>)
+                </td>
+            </tr>
+            <tr>
+                <td>Backlight Proportion</td>
+                <td>
+                    <input id="sliderBar_BackLightProp" type="range" min="1" max="40" value="10" onchange="updateSlider_BackLightProp(this.value);">
+                    (<span id="sliderAmount_BackLightProp">0.5</span>)
+                </td>
+            </tr>
+            <tr>
+                <td colspan="2"><input type="checkbox" onchange="changeShowLightState(this.checked);">Draw light source (as a point)</td>
+            </tr>
+            <tr>
+                <td width="200px"><input type="checkbox" onchange="changeAnimatedLightState(this.checked);">Animated light</td>
+                <td>
+                    <input id="sliderBarLight" type="range" min="1" max="36" value="6" onchange="updateSliderLight(this.value);" disabled>
+                    (<span id="sliderAmountLight">60</span>&deg;/s)
+                </td>
+            </tr>
+        </table>
+    </div>    
+
+    <div class="panel" style="background-color: #333333; margin-left:10px">
+        <p>Shading Parameters (Common)</p>
+        <table>
+            <tr>
+                <td width="200px">Shader</td>
+                <td>
+                    <select onchange="changeActiveShader(this);">
+                        <option value="0" selected="selected">Blinn-Phong Shading</option>
+                        <option value="1">Microfacet Shading</option>
+                    </select>                
+                </td>
+            </tr>
+            <tr>
+                <td>Diffuse Color</td>
+                <td>
+                    <input type="text" id="diffuseColorPicker"> (<span id="diffuseColorText">#e06666</span>)
+                </td>
+            </tr>
+            <tr>
+                <td>Interior Color</td>
+                <td>
+                    <input type="text" id="interiorColorPicker"> (<span id="interiorColorText">#e06666</span>)
+                </td>
+            </tr>
+            <tr>
+                <td>Ambient</td>
+                <td>
+                    <input type="range" min="0" max="50" value="5" onchange="updateSlider_Ambient(this.value);">
+                    (<span id="sliderAmount_Ambient">0.05</span>)
+                </td>
+            </tr>
+            <tr>
+                <td>Distortion</td>
+                <td>
+                    <input type="range" min="0" max="50" value="25" onchange="updateSlider_Distortion(this.value);">
+                    (<span id="sliderAmount_Distortion">0.5</span>)
+                </td>
+            </tr>
+            <tr>
+                <td>Power</td>
+                <td>
+                    <input type="range" min="1" max="50" value="10" onchange="updateSlider_Power(this.value);">
+                    (<span id="sliderAmount_Power">1.0</span>)
+                </td>
+            </tr>
+            <tr>
+                <td>Scale</td>
+                <td>
+                    <input type="range" min="0" max="50" value="10" onchange="updateSlider_Scale(this.value);">
+                    (<span id="sliderAmount_Scale">1.0</span>)
+                </td>
+            </tr>
+            <tr>
+                <td colspan="2"><input type="checkbox" onchange="changeBumpTexState(this.checked);">Bumpy texture?</td>
+            </tr>
+
+            <tr class="phong-panel" style="display:none">
+                <td colspan="2"><hr><p>Shading Parameters (Phong)</p></td>
+            </tr>
+            <tr class="phong-panel" style="display:none">
+                <td>Exponent</td>
+                <td>
+                    <input type="range" min="1" max="40" value="10" onchange="updateSlider_PhongExp(this.value);">
+                    (<span id="sliderAmount_PhongExp">50</span>)
+                </td>
+            </tr>            
+
+            <tr class="blinn-phong-panel" style="display:none">
+                <td colspan="2"><hr><p>Shading Parameters (Blinn-Phong)</p></td>
+            </tr>
+            <tr class="blinn-phong-panel" style="display:none">
+                <td>Exponent</td>
+                <td>
+                    <input type="range" min="1" max="40" value="10" onchange="updateSlider_BlinnPhongExp(this.value);">
+                    (<span id="sliderAmount_BlinnPhongExp">50</span>)
+                </td>
+            </tr>
+
+            <tr class="microfacet-panel" style="display:none">
+                <td colspan="2"><hr><p>Shading Parameters (Microfacet)</p></td>
+            </tr>
+            <tr class="microfacet-panel" style="display:none">
+                <td>Index of Refraction</td>
+                <td>
+                    <input id="sliderBar_MicrofacetIOR" type="range" min="20" max="100" value="50" onchange="updateSlider_MicrofacetIOR(this.value);">
+                    (<span id="sliderAmount_MicrofacetIOR">5.0</span>)
+                </td>
+            </tr>            
+            <tr class="microfacet-panel" style="display:none">
+                <td>Beta</td>
+                <td>
+                    <input id="sliderBar_MicrofacetBeta" type="range" min="5" max="50" value="20" onchange="updateSlider_MicrofacetBeta(this.value);">
+                    (<span id="sliderAmount_MicrofacetBeta">0.2</span>)
+                </td>
+            </tr>
+        </table>
+    </div>
+    <div style="clear:left"></div>
+</body>
+
+</html>
