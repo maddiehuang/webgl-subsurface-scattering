@@ -39,3 +39,4 @@ Shading Parameters
 Suzanne model created by Blender Foundation.
 Hand model by Jeremy E. Grayson under CC Attribution.
 https://sketchfab.com/3d-models/low-poly-human-hands-all-quads-027173f5759f473b9dfeee724ea0f7f6
+All files in the /js directory are third-party and not owned by me.
